@@ -133,6 +133,7 @@ class TestQueryUnderstandingAgentLLM:
         mock_llm.call.side_effect = Exception("LLM unavailable")
         agent = QueryUnderstandingAgent(mock_llm)
         result = await agent.run("cheap milk under 60")
+        # Rule-based parser maps "milk" → "packaged milk" via _NORMALIZATION_MAP
         assert result.product == "packaged milk"
         assert result.intent == QueryIntent.product_search
         assert result.constraints.budget is not None

@@ -300,10 +300,18 @@ class QueryUnderstandingAgent:
 
         # If the rule-based parser found a known product with adequate
         # confidence, skip the LLM entirely.
+        # Check the extracted product and also its source tokens against
+        # the known-products list (rule-based normalization may have
+        # rewritten the term, e.g. "milk" → "packaged milk").
+        raw_tokens = set(_normalize_text(raw_query).split())
+        product_is_known = (
+            product in _KNOWN_PRODUCTS
+            or bool(raw_tokens & _KNOWN_PRODUCTS)
+            or product in _NORMALIZATION_MAP.values()
+        )
         needs_llm = (
             intent == "product_search"
-            and product not in _KNOWN_PRODUCTS
-            and not any(kw in product for kw in _KNOWN_PRODUCTS)
+            and not product_is_known
             and confidence < 0.8
         )
 
