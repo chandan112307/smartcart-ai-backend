@@ -17,11 +17,23 @@ from app.agents.collaborative_reasoning import (
 
 
 class ControllerAgent(BaseExecutionAgent):
-    """Decides the next graph action from accumulated runtime state."""
+    """Decides the next graph action from accumulated runtime state.
 
-    def __init__(self, *, max_retries: int, llm_manager: Any | None = None) -> None:
+    By default uses deterministic rule-based routing (zero LLM calls).
+    LLM-based collaborative reasoning is only used when *both*
+    ``llm_manager`` is supplied *and* ``use_collaborative_llm`` is True.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_retries: int,
+        llm_manager: Any | None = None,
+        use_collaborative_llm: bool = False,
+    ) -> None:
         self._max_retries = max_retries
         self._llm_manager = llm_manager
+        self._use_collaborative_llm = use_collaborative_llm and llm_manager is not None
         self._proposal_agents = (
             ProposalAgent(
                 llm_manager=llm_manager,
@@ -68,7 +80,7 @@ class ControllerAgent(BaseExecutionAgent):
         decision_source = "deterministic_fallback"
         available_actions = self._available_actions(state, fallback_action)
         next_action = fallback_action
-        if self._llm_manager is not None:
+        if self._use_collaborative_llm:
             (
                 next_action,
                 collaborative_proposals,

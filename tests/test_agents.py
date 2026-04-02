@@ -98,17 +98,34 @@ class TestQueryUnderstandingAgentRuleBased:
 class TestQueryUnderstandingAgentLLM:
     @pytest.mark.asyncio
     async def test_run_with_llm_success(self):
+        """LLM is invoked for unknown products that rule-based parsing cannot
+        confidently identify, and the LLM result is returned."""
         mock_llm = AsyncMock()
         mock_llm.call.return_value = {
-            "product": "milk",
-            "filters": {"max_price": 60, "min_price": None, "category": "dairy", "quantity": None, "brand": None},
+            "product": "organic quinoa",
+            "filters": {"max_price": None, "min_price": None, "category": "staples", "quantity": None, "brand": None},
             "intent": "product_search",
+            "normalized_query": "organic quinoa",
+            "items": [{"name": "organic quinoa", "category": "staples", "attributes": {"quantity": None, "unit": None, "preferences": []}}],
+            "constraints": {"budget": None, "servings": None, "preferences": []},
+            "metadata": {"confidence": 0.9, "notes": "LLM parsed"},
         }
         agent = QueryUnderstandingAgent(mock_llm)
-        result = await agent.run("cheap milk under 60")
-        assert result.product == "milk"
-        assert result.filters.max_price == 60.0
+        result = await agent.run("organic quinoa")
+        assert result.product == "organic quinoa"
         assert result.intent == QueryIntent.product_search
+        mock_llm.call.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_skips_llm_for_known_products(self):
+        """Known products use rule-based parsing and never call LLM."""
+        mock_llm = AsyncMock()
+        mock_llm.call.return_value = {"product": "milk"}
+        agent = QueryUnderstandingAgent(mock_llm)
+        result = await agent.run("cheap milk under 60")
+        assert result.product == "packaged milk"
+        assert result.intent == QueryIntent.product_search
+        mock_llm.call.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_falls_back_on_llm_error(self):

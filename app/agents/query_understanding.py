@@ -288,18 +288,39 @@ class QueryUnderstandingAgent:
         if not raw_query or not raw_query.strip():
             raise AgentException("QueryUnderstandingAgent", "Empty query received")
 
-        prompt = _PROMPT_TEMPLATE.format(query=raw_query.strip())
+        # Rule-based first: use deterministic parsing as the primary path.
+        # Only fall back to LLM for genuinely ambiguous queries where the
+        # rule-based parser fails to identify a known product.
+        rule_parsed = _rule_based_parse(raw_query)
         llm_called = False
 
-        try:
-            llm_called = True
-            parsed = await self._llm.call(prompt, schema_example=_SCHEMA_EXAMPLE)
-            logger.debug("[QUERY_AGENT] llm_called=%s raw_output=%s", llm_called, parsed)
-            parsed = self._validate_parsed(parsed, raw_query)
-            logger.debug("[PARSE_CHECK] success=true reason=")
-        except Exception:
-            logger.debug("[PARSE_CHECK] success=false reason=llm_or_validation_failed")
-            parsed = _rule_based_parse(raw_query)
+        product = rule_parsed.get("product", "")
+        intent = rule_parsed.get("intent", "product_search")
+        confidence = rule_parsed.get("metadata", {}).get("confidence", 0.0)
+
+        # If the rule-based parser found a known product with adequate
+        # confidence, skip the LLM entirely.
+        needs_llm = (
+            intent == "product_search"
+            and product not in _KNOWN_PRODUCTS
+            and not any(kw in product for kw in _KNOWN_PRODUCTS)
+            and confidence < 0.8
+        )
+
+        if needs_llm:
+            prompt = _PROMPT_TEMPLATE.format(query=raw_query.strip())
+            try:
+                llm_called = True
+                parsed = await self._llm.call(prompt, schema_example=_SCHEMA_EXAMPLE)
+                logger.debug("[QUERY_AGENT] llm_called=%s raw_output=%s", llm_called, parsed)
+                parsed = self._validate_parsed(parsed, raw_query)
+                logger.debug("[PARSE_CHECK] success=true reason=")
+            except Exception:
+                logger.debug("[PARSE_CHECK] success=false reason=llm_or_validation_failed")
+                parsed = rule_parsed
+        else:
+            parsed = rule_parsed
+
         logger.debug("[QUERY_AGENT] parsed_query=%s llm_called=%s", parsed, llm_called)
 
         return StructuredQuery(

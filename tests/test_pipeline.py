@@ -324,7 +324,7 @@ class TestSearchPipeline:
 
         mock_llm = AsyncMock()
         mock_llm.call.side_effect = collaborative_call
-        pipeline = AgentPipeline(llm_manager=mock_llm)
+        pipeline = AgentPipeline(llm_manager=mock_llm, use_collaborative_llm=True)
 
         parsed = await pipeline.parse_query("milk")
         result = await pipeline.run_search(parsed)

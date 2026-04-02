@@ -92,7 +92,7 @@ class AgentPipeline:
     in a real LangGraph graph if the package is available.
     """
 
-    def __init__(self, llm_manager: Optional[LLMManager] = None) -> None:
+    def __init__(self, llm_manager: Optional[LLMManager] = None, use_collaborative_llm: Optional[bool] = None) -> None:
         llm = llm_manager or get_llm_manager()
         self._llm_manager = llm
         self._synonym_memory = SynonymMemoryAgent()
@@ -123,6 +123,12 @@ class AgentPipeline:
         self._matching_quality_threshold = _MATCHING_QUALITY_THRESHOLD
         self._min_high_quality_results = _MIN_HIGH_QUALITY_RESULTS
         self._max_enrichment_retry_attempts = _MAX_ENRICHMENT_RETRY_ATTEMPTS
+        from app.core.config import get_settings
+        self._use_collaborative_llm = (
+            use_collaborative_llm
+            if use_collaborative_llm is not None
+            else get_settings().llm_collaborative_controller
+        )
         self._search_graph = build_search_execution_graph(self)
 
     # ------------------------------------------------------------------
