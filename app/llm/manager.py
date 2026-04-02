@@ -21,7 +21,7 @@ from typing import Any, Deque, Dict, Optional, Type
 from pydantic import BaseModel
 
 from app.core.config import get_settings
-from app.core.exceptions import LLMException, LLMRateLimitException
+from app.core.exceptions import LLMException
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -179,8 +179,6 @@ class LLMManager:
 
     async def _call_openai(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
-            import asyncio
-
             await self._rate_limiter.acquire()
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -200,8 +198,6 @@ class LLMManager:
 
     async def _call_groq(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
-            import asyncio
-
             await self._rate_limiter.acquire()
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
