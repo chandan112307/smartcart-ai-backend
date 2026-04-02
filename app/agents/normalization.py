@@ -1,7 +1,10 @@
 """Normalization Agent.
 
 Converts raw/extracted user terms into canonical grocery intents and variants
-using an LLM-first strategy, with deterministic fallback when unavailable.
+using a rule-based-first strategy, with LLM fallback only for unknown terms.
+
+An in-memory cache (``_normalization_cache``) prevents repeated LLM calls
+for the same term within the process lifetime.
 """
 
 import logging
@@ -13,6 +16,9 @@ from app.data.models import NormalizedEntities, NormalizedEntity, NormalizedItem
 from app.llm.manager import LLMManager
 
 logger = logging.getLogger(__name__)
+
+# In-memory cache: term → NormalizedItem (avoids repeated LLM calls)
+_normalization_cache: Dict[str, NormalizedItem] = {}
 
 _SCHEMA_EXAMPLE = """{
   "canonical_name": "paneer",
@@ -159,18 +165,30 @@ class NormalizationAgent(BaseExecutionAgent):
         self._synonym_memory = synonym_memory or SynonymMemoryAgent()
 
     async def run(self, term: str) -> NormalizedItem:
+        cache_key = term.strip().lower()
+        if cache_key in _normalization_cache:
+            logger.debug("[NORMALIZATION] input=%s cache=hit", term)
+            return _normalization_cache[cache_key]
+
         prompt = _PROMPT_TEMPLATE.format(term=term.strip())
         remembered = await self._synonym_memory.lookup(term)
         if remembered:
             raw_output = _fallback_normalization(remembered)
         else:
-            raw_output: Dict[str, Any]
-            try:
-                raw_output = await self._llm.call(prompt, schema_example=_SCHEMA_EXAMPLE)
-                logger.debug("[NORMALIZATION] input=%s llm_output=%s", term, raw_output)
-            except Exception:
-                logger.debug("[NORMALIZATION] input=%s error=llm_failed_using_fallback", term)
-                raw_output = _fallback_normalization(term)
+            # Rule-based first: check safe fallbacks before calling LLM
+            rule_result = _fallback_normalization(term)
+            if rule_result["category"] != "general":
+                # Known term — skip LLM entirely
+                raw_output = rule_result
+            else:
+                # Unknown term — try LLM, fall back to rule result
+                raw_output: Dict[str, Any]
+                try:
+                    raw_output = await self._llm.call(prompt, schema_example=_SCHEMA_EXAMPLE)
+                    logger.debug("[NORMALIZATION] input=%s llm_output=%s", term, raw_output)
+                except Exception:
+                    logger.debug("[NORMALIZATION] input=%s error=llm_failed_using_fallback", term)
+                    raw_output = rule_result
 
         canonical = str(raw_output.get("canonical_name") or term).strip().lower()
         variants = raw_output.get("possible_variants") or []
@@ -200,6 +218,7 @@ class NormalizationAgent(BaseExecutionAgent):
             item.category or "",
         )
         await self._synonym_memory.remember(term, item.canonical_name)
+        _normalization_cache[cache_key] = item
         return item
 
     async def run_entities(self, raw_entities: RawEntities) -> NormalizedEntities:

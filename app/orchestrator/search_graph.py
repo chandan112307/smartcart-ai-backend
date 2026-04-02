@@ -20,6 +20,7 @@ def build_search_execution_graph(pipeline: "AgentPipeline"):
     controller_agent = ControllerAgent(
         max_retries=pipeline._max_enrichment_retry_attempts,
         llm_manager=pipeline._llm_manager,
+        use_collaborative_llm=pipeline._use_collaborative_llm,
     )
 
     def clone_diagnostics(state: SearchGraphState) -> MatchingDiagnostics:

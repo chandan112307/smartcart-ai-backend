@@ -3,11 +3,20 @@
 All outputs are forced to valid JSON via either:
   1. Native JSON mode (OpenAI)
   2. Prompt-level instruction + schema validation fallback
+
+Includes a sliding-window rate limiter that caps outbound LLM requests
+to ``settings.llm_rate_limit_rpm`` per 60-second window (default: 25 RPM).
+When the limit is reached the caller sleeps until a slot opens rather than
+firing requests that will be rejected with HTTP 429.
 """
 
+import asyncio
 import json
+import logging
 import re
-from typing import Any, Dict, Optional, Type
+import time
+from collections import deque
+from typing import Any, Deque, Dict, Optional, Type
 
 from pydantic import BaseModel
 
@@ -15,6 +24,9 @@ from app.core.config import get_settings
 from app.core.exceptions import LLMException
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+_RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 def _build_json_prompt(user_prompt: str, schema_example: Optional[str] = None) -> str:
@@ -35,8 +47,62 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
         raise LLMException(f"LLM returned invalid JSON: {exc}") from exc
 
 
+class LLMRateLimiter:
+    """Async-safe sliding-window rate limiter for outbound LLM requests.
+
+    Tracks timestamps of recent calls in a ``deque`` and enforces a maximum
+    of ``max_rpm`` requests per 60-second rolling window.
+    """
+
+    def __init__(self, max_rpm: int) -> None:
+        self._max_rpm = max(1, max_rpm)
+        self._timestamps: Deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    @property
+    def max_rpm(self) -> int:
+        return self._max_rpm
+
+    def _prune(self, now: float) -> None:
+        """Remove timestamps older than the 60-second window."""
+        cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+        while self._timestamps and self._timestamps[0] <= cutoff:
+            self._timestamps.popleft()
+
+    async def acquire(self) -> None:
+        """Wait until a request slot is available, then record the call."""
+        async with self._lock:
+            now = time.monotonic()
+            self._prune(now)
+
+            if len(self._timestamps) >= self._max_rpm:
+                # Wait until the oldest entry expires from the window.
+                wait_seconds = self._timestamps[0] + _RATE_LIMIT_WINDOW_SECONDS - now
+                if wait_seconds > 0:
+                    logger.warning(
+                        "LLM rate limit reached (%d/%d RPM). "
+                        "Waiting %.2fs for a slot.",
+                        len(self._timestamps),
+                        self._max_rpm,
+                        wait_seconds,
+                    )
+                    await asyncio.sleep(wait_seconds)
+                    now = time.monotonic()
+                    self._prune(now)
+
+            self._timestamps.append(now)
+
+    def remaining(self) -> int:
+        """Return how many requests are still available in the current window."""
+        self._prune(time.monotonic())
+        return max(0, self._max_rpm - len(self._timestamps))
+
+
 class LLMManager:
     """Manages LLM API calls with structured output and provider fallback.
+
+    Includes an internal :class:`LLMRateLimiter` that enforces
+    ``settings.llm_rate_limit_rpm`` requests per minute.
 
     Usage:
         manager = LLMManager()
@@ -48,6 +114,7 @@ class LLMManager:
         self._openai_client: Optional[Any] = None
         self._groq_client: Optional[Any] = None
         self._initialized = False
+        self._rate_limiter = LLMRateLimiter(max_rpm=settings.llm_rate_limit_rpm)
 
     def _ensure_clients(self) -> None:
         if self._initialized:
@@ -76,8 +143,9 @@ class LLMManager:
     ) -> Dict[str, Any]:
         """Call the configured LLM and return a parsed JSON dict.
 
+        Waits for a rate-limiter slot before issuing the request.
         Falls back to the alternative provider if the primary fails.
-        Falls back to a rule-based stub if no LLM is available.
+        Raises :class:`LLMException` if no provider is available.
         """
         self._ensure_clients()
         full_prompt = _build_json_prompt(prompt, schema_example)
@@ -111,8 +179,7 @@ class LLMManager:
 
     async def _call_openai(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
-            import asyncio
-
+            await self._rate_limiter.acquire()
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
@@ -131,8 +198,7 @@ class LLMManager:
 
     async def _call_groq(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
-            import asyncio
-
+            await self._rate_limiter.acquire()
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
