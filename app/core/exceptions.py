@@ -28,6 +28,11 @@ class LLMException(SmartCartException):
         super().__init__(message, status_code=502)
 
 
+class LLMRateLimitException(LLMException):
+    def __init__(self, message: str = "LLM rate limit exceeded"):
+        super().__init__(message)
+
+
 class DataLayerException(SmartCartException):
     def __init__(self, message: str = "Data retrieval failed"):
         super().__init__(message, status_code=503)

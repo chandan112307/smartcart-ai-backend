@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama3-8b-8192"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1024
+    llm_rate_limit_rpm: int = 25  # Max LLM requests per minute
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
